@@ -57,7 +57,7 @@ which don't need to be executed before releasing each version.
 2. Ensure you have a Linux machine, on which the git, Golang, and docker have been installed.
     - Ensure the Golang version matches the version defined in `.go-version` file.
     - Ensure non-privileged users can run docker commands, refer to the [Linux postinstall](https://docs.docker.com/engine/install/linux-postinstall/).
-    - Ensure there is at least 500MB of free space on your Linux machine.
+    - Ensure there is at least 5GB of free space on your Linux machine.
 3. Install gsutil, refer to [gsutil_install](https://cloud.google.com/storage/docs/gsutil_install). When asked about cloud project to use, pick `etcd-development`.
 4. Authenticate the image registry, refer to [Authentication methods](https://cloud.google.com/container-registry/docs/advanced-authentication).
    - `gcloud auth login`
@@ -79,13 +79,14 @@ which don't need to be executed before releasing each version.
    under project `etcd-development`, and images are pushed to `quay.io` and `gcr.io`.
 5. Publish the release page on GitHub
    - Set the release title as the version name
+   - Choose the correct release tag (generated from step #4)
    - Follow the format of previous release pages
    - Attach the generated binaries and signature file
    - Select whether it's a pre-release
    - Publish the release
 6. Announce to the etcd-dev googlegroup
 
-   Follow the format of previous release emails sent to etcd-dev@googlegroups.com, see an example below,
+   Follow the format of previous release emails sent to etcd-dev@googlegroups.com, see an example below. After sending out the email, ask one of the mailing list maintainers to approve the email from the pending list.
 ```
 Hello,
 

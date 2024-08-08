@@ -42,6 +42,7 @@ import (
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	"go.etcd.io/etcd/client/pkg/v3/types"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/pkg/v3/featuregate"
 	"go.etcd.io/etcd/pkg/v3/flags"
 	"go.etcd.io/etcd/pkg/v3/netutil"
 	"go.etcd.io/etcd/server/v3/config"
@@ -50,6 +51,7 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3compactor"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3discovery"
+	"go.etcd.io/etcd/server/v3/features"
 )
 
 const (
@@ -108,6 +110,8 @@ const (
 	maxElectionMs = 50000
 	// backend freelist map type
 	freelistArrayType = "array"
+
+	ServerFeatureGateFlagName = "feature-gates"
 )
 
 var (
@@ -455,6 +459,9 @@ type Config struct {
 
 	// V2Deprecation describes phase of API & Storage V2 support
 	V2Deprecation config.V2DeprecationEnum `json:"v2-deprecation"`
+
+	// ServerFeatureGate is a server level feature gate
+	ServerFeatureGate featuregate.FeatureGate
 }
 
 // configYAML holds the config suitable for yaml parsing
@@ -476,6 +483,8 @@ type configJSON struct {
 
 	ClientSecurityJSON securityConfig `json:"client-transport-security"`
 	PeerSecurityJSON   securityConfig `json:"peer-transport-security"`
+
+	ServerFeatureGatesJSON string `json:"feature-gates"`
 }
 
 type securityConfig struct {
@@ -576,6 +585,7 @@ func NewConfig() *Config {
 		},
 
 		AutoCompactionMode: DefaultAutoCompactionMode,
+		ServerFeatureGate:  features.NewDefaultServerFeatureGate(DefaultName, nil),
 	}
 	cfg.InitialCluster = cfg.InitialClusterFromName(cfg.Name)
 	return cfg
@@ -762,6 +772,9 @@ func (cfg *Config) AddFlags(fs *flag.FlagSet) {
 	// unsafe
 	fs.BoolVar(&cfg.UnsafeNoFsync, "unsafe-no-fsync", false, "Disables fsync, unsafe, will cause data loss.")
 	fs.BoolVar(&cfg.ForceNewCluster, "force-new-cluster", false, "Force to create a new one member cluster.")
+
+	// featuregate
+	cfg.ServerFeatureGate.(featuregate.MutableFeatureGate).AddFlag(fs, ServerFeatureGateFlagName)
 }
 
 func ConfigFromFile(path string) (*Config, error) {
@@ -781,6 +794,32 @@ func (cfg *configYAML) configFromFile(path string) error {
 	defaultInitialCluster := cfg.InitialCluster
 
 	err = yaml.Unmarshal(b, cfg)
+	if err != nil {
+		return err
+	}
+
+	if cfg.configJSON.ServerFeatureGatesJSON != "" {
+		err = cfg.Config.ServerFeatureGate.(featuregate.MutableFeatureGate).Set(cfg.configJSON.ServerFeatureGatesJSON)
+		if err != nil {
+			return err
+		}
+	}
+
+	// parses the yaml bytes to raw map first, then getBoolFlagVal can get the top level bool flag value.
+	var cfgMap map[string]interface{}
+	err = yaml.Unmarshal(b, &cfgMap)
+	if err != nil {
+		return err
+	}
+	getBoolFlagVal := func(flagName string) *bool {
+		flagVal, ok := cfgMap[flagName]
+		if !ok {
+			return nil
+		}
+		boolVal := flagVal.(bool)
+		return &boolVal
+	}
+	err = SetFeatureGatesFromExperimentalFlags(cfg.ServerFeatureGate, getBoolFlagVal, cfg.configJSON.ServerFeatureGatesJSON)
 	if err != nil {
 		return err
 	}
@@ -875,6 +914,36 @@ func (cfg *configYAML) configFromFile(path string) error {
 		cfg.SelfSignedCertValidity = 1
 	}
 	return cfg.Validate()
+}
+
+// SetFeatureGatesFromExperimentalFlags sets the feature gate values if the feature gate is not explicitly set
+// while their corresponding experimental flags are explicitly set, for all the features in ExperimentalFlagToFeatureMap.
+// TODO: remove after all experimental flags are deprecated.
+func SetFeatureGatesFromExperimentalFlags(fg featuregate.FeatureGate, getExperimentalFlagVal func(string) *bool, featureGatesVal string) error {
+	m := make(map[featuregate.Feature]bool)
+	// verify that the feature gate and its experimental flag are not both set at the same time.
+	for expFlagName, featureName := range features.ExperimentalFlagToFeatureMap {
+		flagVal := getExperimentalFlagVal(expFlagName)
+		if flagVal == nil {
+			continue
+		}
+		if strings.Contains(featureGatesVal, string(featureName)) {
+			return fmt.Errorf("cannot specify both flags: --%s=%v and --%s=%s=%v at the same time, please just use --%s=%s=%v",
+				expFlagName, *flagVal, ServerFeatureGateFlagName, featureName, fg.Enabled(featureName), ServerFeatureGateFlagName, featureName, fg.Enabled(featureName))
+		}
+		m[featureName] = *flagVal
+	}
+
+	// filter out unknown features for fg, because we could use SetFeatureGatesFromExperimentalFlags both for
+	// server and cluster level feature gates.
+	allFeatures := fg.(featuregate.MutableFeatureGate).GetAll()
+	mFiltered := make(map[string]bool)
+	for k, v := range m {
+		if _, ok := allFeatures[k]; ok {
+			mFiltered[string(k)] = v
+		}
+	}
+	return fg.(featuregate.MutableFeatureGate).SetFromMap(mFiltered)
 }
 
 func updateCipherSuites(tls *transport.TLSInfo, ss []string) error {

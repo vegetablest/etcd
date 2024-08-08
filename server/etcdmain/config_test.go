@@ -25,8 +25,10 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"go.etcd.io/etcd/pkg/v3/featuregate"
 	"go.etcd.io/etcd/pkg/v3/flags"
 	"go.etcd.io/etcd/server/v3/embed"
+	"go.etcd.io/etcd/server/v3/features"
 )
 
 func TestConfigParsingMemberFlags(t *testing.T) {
@@ -393,6 +395,83 @@ func TestFlagsPresentInHelp(t *testing.T) {
 			t.Errorf("Neither flagsline nor usageline in help.go contains flag named %s", flagText)
 		}
 	})
+}
+
+func TestParseFeatureGateFlags(t *testing.T) {
+	testCases := []struct {
+		name             string
+		args             []string
+		expectErr        bool
+		expectedFeatures map[featuregate.Feature]bool
+	}{
+		{
+			name: "default",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag: false,
+				features.DistributedTracing:      false,
+			},
+		},
+		{
+			name: "cannot set both experimental flag and feature gate flag",
+			args: []string{
+				"--experimental-stop-grpc-service-on-defrag=false",
+				"--feature-gates=StopGRPCServiceOnDefrag=true",
+			},
+			expectErr: true,
+		},
+		{
+			name: "ok to set different experimental flag and feature gate flag",
+			args: []string{
+				"--experimental-stop-grpc-service-on-defrag=true",
+				"--feature-gates=DistributedTracing=true",
+			},
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag: true,
+				features.DistributedTracing:      true,
+			},
+		},
+		{
+			name: "can set feature gate from experimental flag",
+			args: []string{
+				"--experimental-stop-grpc-service-on-defrag=true",
+			},
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag: true,
+				features.DistributedTracing:      false,
+			},
+		},
+		{
+			name: "can set feature gate from feature gate flag",
+			args: []string{
+				"--feature-gates=StopGRPCServiceOnDefrag=true,DistributedTracing=true",
+			},
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag: true,
+				features.DistributedTracing:      true,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newConfig()
+			err := cfg.parse(tc.args)
+			if tc.expectErr {
+				if err == nil {
+					t.Fatal("expect parse error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for k, v := range tc.expectedFeatures {
+				if cfg.ec.ServerFeatureGate.Enabled(k) != v {
+					t.Errorf("expected feature gate %s=%v, got %v", k, v, cfg.ec.ServerFeatureGate.Enabled(k))
+				}
+			}
+		})
+	}
 }
 
 func mustCreateCfgFile(t *testing.T, b []byte) *os.File {
